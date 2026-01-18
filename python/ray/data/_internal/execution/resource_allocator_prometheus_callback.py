@@ -103,4 +103,4 @@ class ResourceAllocatorPrometheusCallback(ExecutionCallback):
                 if math.isinf(output_budget_bytes):
                     # Convert inf to -1 to represent unlimited bytes to read
                     output_budget_bytes = -1
-                self._max_bytes_to_read_gauge.set(output_budget_bytes, tags)
+                self._max_bytes_to_read_gauge.set(output_budget_bytes, tags=tags)
