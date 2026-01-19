@@ -11,9 +11,11 @@ if TYPE_CHECKING:
 
 
 class ResourceAllocatorPrometheusCallback(ExecutionCallback):
-    """
-    Callback that monitors the StreamingExecutor and updates Prometheus
-    metrics related to resource allocation (CPU/GPU budgets, memory, etc.).
+    """Updates Prometheus metrics related to resource allocation.
+
+    This callback monitors the StreamingExecutor and updates Prometheus
+    Gauges for CPU, GPU, memory, and object store memory budgets for each
+    operator at every execution step.
     """
 
     def __init__(self):
@@ -44,9 +46,8 @@ class ResourceAllocatorPrometheusCallback(ExecutionCallback):
         )
 
     def on_execution_step(self, executor: "StreamingExecutor") -> None:
-        """
-        Called by the executor after every scheduling loop step.
-        """
+        """Called by the executor after every scheduling loop step."""
+
         topology = executor._topology
         resource_manager = executor._resource_manager
         dataset_id = executor._dataset_id
