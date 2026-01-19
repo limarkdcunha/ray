@@ -250,6 +250,11 @@ class StreamingExecutor(Executor, threading.Thread):
             # Reset the scheduling loop duration gauge + resource manager budgets/usages.
             self._resource_manager.update_usages()
             self.update_metrics(0)
+
+            # Trigger callbacks to ensure resource gauges receive a final update.
+            for callback in self._callbacks:
+                callback.on_execution_step(self)
+
             if self._data_context.enable_auto_log_stats:
                 logger.info(stats_summary_string)
             # Close the progress manager with a finishing message.
