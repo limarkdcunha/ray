@@ -105,3 +105,13 @@ class ResourceAllocatorPrometheusCallback(ExecutionCallback):
                     # Convert inf to -1 to represent unlimited bytes to read
                     output_budget_bytes = -1
                 self._max_bytes_to_read_gauge.set(output_budget_bytes, tags=tags)
+
+    def after_execution_succeeds(self, executor: "StreamingExecutor") -> None:
+        """Updates metrics upon successful execution to ensure final states are captured."""
+        self.on_execution_step(executor)
+
+    def after_execution_fails(
+        self, executor: "StreamingExecutor", exception: Exception
+    ) -> None:
+        """Updates metrics upon execution failure to ensure final states are captured."""
+        self.on_execution_step(executor)

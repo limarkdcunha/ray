@@ -251,10 +251,6 @@ class StreamingExecutor(Executor, threading.Thread):
             self._resource_manager.update_usages()
             self.update_metrics(0)
 
-            # Trigger callbacks to ensure resource gauges receive a final update.
-            for callback in self._callbacks:
-                callback.on_execution_step(self)
-
             if self._data_context.enable_auto_log_stats:
                 logger.info(stats_summary_string)
             # Close the progress manager with a finishing message.
@@ -285,10 +281,10 @@ class StreamingExecutor(Executor, threading.Thread):
             )
 
             if exception is None:
-                for callback in get_execution_callbacks(self._data_context):
+                for callback in self._callbacks:
                     callback.after_execution_succeeds(self)
             else:
-                for callback in get_execution_callbacks(self._data_context):
+                for callback in self._callbacks:
                     callback.after_execution_fails(self, exception)
 
             self._cluster_autoscaler.on_executor_shutdown()
