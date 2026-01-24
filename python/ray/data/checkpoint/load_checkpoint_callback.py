@@ -1,10 +1,7 @@
 import logging
 from typing import Optional
 
-from ray.data._internal.execution.execution_callback import (
-    ExecutionCallback,
-    remove_execution_callback,
-)
+from ray.data._internal.execution.execution_callback import ExecutionCallback
 from ray.data._internal.execution.streaming_executor import StreamingExecutor
 from ray.data.block import Block
 from ray.data.checkpoint import CheckpointConfig
@@ -17,46 +14,52 @@ logger = logging.getLogger(__name__)
 class LoadCheckpointCallback(ExecutionCallback):
     """ExecutionCallback that handles checkpoints."""
 
-    def __init__(self, config: CheckpointConfig):
-        assert config is not None
-        self._config = config
-
-        self._ckpt_filter = self._create_checkpoint_filter(config)
+    def __init__(self):
+        # We cannot require config in __init__ anymore because this class is
+        # instantiated by the StreamingExecutor generic loop.
+        self._config: Optional[CheckpointConfig] = None
+        self._ckpt_filter: Optional[BatchBasedCheckpointFilter] = None
         self._checkpoint_ref: Optional[ObjectRef[Block]] = None
 
     def _create_checkpoint_filter(
         self, config: CheckpointConfig
     ) -> BatchBasedCheckpointFilter:
-        """Factory method to create the checkpoint filter.
-
-        Subclasses can override this to use a different filter implementation.
-        """
+        """Factory method to create the checkpoint filter."""
         return BatchBasedCheckpointFilter(config)
 
     def before_execution_starts(self, executor: StreamingExecutor):
-        assert self._config is executor._data_context.checkpoint_config
+        # --- NEW LOGIC: Get config from context ---
+        config = executor._data_context.checkpoint_config
+
+        # Guard clause: If no checkpoint config exists, do nothing (No-Op)
+        if config is None:
+            return
+
+        self._config = config
+        self._ckpt_filter = self._create_checkpoint_filter(config)
 
         # Load checkpoint data before execution starts.
         self._checkpoint_ref = self._ckpt_filter.load_checkpoint()
 
     def after_execution_succeeds(self, executor: StreamingExecutor):
-        assert self._config is executor._data_context.checkpoint_config
+        # Guard clause: If we didn't start (no config), we don't finish
+        if self._config is None:
+            return
 
-        # Remove the callback from the DataContext.
-        remove_execution_callback(self, executor._data_context)
-        # Delete checkpoint data.
+        # Delete checkpoint data if configured
         try:
             if self._config.delete_checkpoint_on_success:
-                self._ckpt_filter.delete_checkpoint()
+                # Ensure filter was created
+                if self._ckpt_filter:
+                    self._ckpt_filter.delete_checkpoint()
         except Exception:
             logger.warning("Failed to delete checkpoint data.", exc_info=True)
 
     def after_execution_fails(self, executor: StreamingExecutor, error: Exception):
-        assert self._config is executor._data_context.checkpoint_config
-
-        # Remove the callback from the DataContext.
-        remove_execution_callback(self, executor._data_context)
+        # No clean up needed here for now
+        pass
 
     def load_checkpoint(self) -> ObjectRef[Block]:
-        assert self._checkpoint_ref is not None
+        # This is called by the physical operators that need the data
+        assert self._checkpoint_ref is not None, "Checkpoint data not loaded"
         return self._checkpoint_ref

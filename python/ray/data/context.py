@@ -5,7 +5,7 @@ import os
 import threading
 import warnings
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union
 
 import ray
 from ray._private.ray_constants import env_bool, env_float, env_integer
@@ -17,6 +17,7 @@ from ray.util.debug import log_once
 from ray.util.scheduling_strategies import SchedulingStrategyT
 
 if TYPE_CHECKING:
+    from ray.data._internal.execution.execution_callback import ExecutionCallback
     from ray.data._internal.execution.interfaces import ExecutionOptions
     from ray.data._internal.issue_detection.issue_detector_configuration import (
         IssueDetectorsConfiguration,
@@ -254,6 +255,23 @@ DEFAULT_ENABLE_DYNAMIC_OUTPUT_QUEUE_SIZE_BACKPRESSURE: bool = env_bool(
 DEFAULT_DOWNSTREAM_CAPACITY_BACKPRESSURE_RATIO: float = env_float(
     "RAY_DATA_DOWNSTREAM_CAPACITY_BACKPRESSURE_RATIO", 10.0
 )
+
+
+def _get_default_callbacks() -> List[Type["ExecutionCallback"]]:
+    """Factory to return default callback classes."""
+    from ray.data._internal.execution.callbacks.execution_idx_update_callback import (
+        ExecutionIdxUpdateCallback,
+    )
+    from ray.data._internal.execution.callbacks.insert_issue_detectors import (
+        IssueDetectionExecutionCallback,
+    )
+    from ray.data.checkpoint.load_checkpoint_callback import LoadCheckpointCallback
+
+    return [
+        LoadCheckpointCallback,
+        ExecutionIdxUpdateCallback,
+        IssueDetectionExecutionCallback,
+    ]
 
 
 @DeveloperAPI
@@ -635,6 +653,10 @@ class DataContext:
     pandas_block_ignore_metadata: bool = DEFAULT_PANDAS_BLOCK_IGNORE_METADATA
 
     _checkpoint_config: Optional[CheckpointConfig] = None
+
+    default_callback_classes: List[Type["ExecutionCallback"]] = field(
+        default_factory=_get_default_callbacks
+    )
 
     def __post_init__(self):
         # The additonal ray remote args that should be added to
