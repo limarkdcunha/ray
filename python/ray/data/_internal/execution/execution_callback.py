@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from ray.data.context import DataContext
 
@@ -12,6 +12,25 @@ ENV_CALLBACKS_INITIALIZED_KEY = "_env_callbacks_initialized"
 
 class ExecutionCallback:
     """Callback interface for execution events."""
+
+    @classmethod
+    def from_executor(
+        cls, executor: "StreamingExecutor"
+    ) -> Optional["ExecutionCallback"]:
+        """Factory method to create a callback instance from the executor.
+
+        This allows the callback to extract necessary state (like configs) from
+        the executor or context before instantiation.
+
+        Args:
+            executor: The executor instance to initialize from.
+
+        Returns:
+            An instance of the callback, or None if the callback should be skipped
+            (e.g. if a required config is missing).
+        """
+
+        return cls()
 
     def before_execution_starts(self, executor: "StreamingExecutor"):
         """Called before the Dataset execution starts."""

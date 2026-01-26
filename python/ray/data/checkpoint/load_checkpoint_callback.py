@@ -21,6 +21,17 @@ class LoadCheckpointCallback(ExecutionCallback):
         self._ckpt_filter: Optional[BatchBasedCheckpointFilter] = None
         self._checkpoint_ref: Optional[ObjectRef[Block]] = None
 
+    @classmethod
+    def from_executor(
+        cls, executor: StreamingExecutor
+    ) -> Optional["LoadCheckpointCallback"]:
+        config = executor._data_context.checkpoint_config
+
+        if config is None:
+            return None
+
+        return cls(config)
+
     def _create_checkpoint_filter(
         self, config: CheckpointConfig
     ) -> BatchBasedCheckpointFilter:

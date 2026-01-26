@@ -133,7 +133,10 @@ class StreamingExecutor(Executor, threading.Thread):
         # 1. Defaults from DataContext
         if hasattr(self._data_context, "default_callback_classes"):
             for cls in self._data_context.default_callback_classes:
-                callbacks.append(cls())
+                callback = cls.from_executor(self)
+
+                if callback:
+                    callbacks.append(callback)
 
         # 2. From Environment Variable
         env_str = os.environ.get(EXECUTION_CALLBACKS_ENV_VAR)
@@ -146,8 +149,11 @@ class StreamingExecutor(Executor, threading.Thread):
                     module_path, class_name = path.rsplit(".", 1)
                     module = importlib.import_module(module_path)
                     cls = getattr(module, class_name)
-                    callbacks.append(cls())
-                except Exception as e:
+
+                    callback = cls.from_executor(self)
+                    if callback:
+                        callbacks.append(callback)
+                except (ImportError, AttributeError, ValueError, TypeError) as e:
                     logger.warning(f"Failed to load callback {path}: {e}")
 
         return callbacks
