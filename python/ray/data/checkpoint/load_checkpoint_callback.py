@@ -14,9 +14,11 @@ logger = logging.getLogger(__name__)
 class LoadCheckpointCallback(ExecutionCallback):
     """ExecutionCallback that handles checkpoints."""
 
-    def __init__(self):
-        self._config: Optional[CheckpointConfig] = None
-        self._ckpt_filter: Optional[BatchBasedCheckpointFilter] = None
+    def __init__(self, config: CheckpointConfig):
+        assert config is not None
+        self._config = config
+
+        self._ckpt_filter = self._create_checkpoint_filter(config)
         self._checkpoint_ref: Optional[ObjectRef[Block]] = None
 
     @classmethod
@@ -27,7 +29,6 @@ class LoadCheckpointCallback(ExecutionCallback):
 
         if config is None:
             return None
-
         return cls(config)
 
     def _create_checkpoint_filter(
@@ -40,15 +41,6 @@ class LoadCheckpointCallback(ExecutionCallback):
         return BatchBasedCheckpointFilter(config)
 
     def before_execution_starts(self, executor: StreamingExecutor):
-        config = executor._data_context.checkpoint_config
-
-        if config is None:
-            return
-
-        self._config = config
-        self._ckpt_filter = self._create_checkpoint_filter(config)
-
-        # Load checkpoint data before execution starts.
         self._checkpoint_ref = self._ckpt_filter.load_checkpoint()
 
     def after_execution_succeeds(self, executor: StreamingExecutor):

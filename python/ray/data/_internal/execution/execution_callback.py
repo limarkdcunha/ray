@@ -13,7 +13,7 @@ class ExecutionCallback:
 
     @classmethod
     def from_executor(
-        cls, executor: "StreamingExecutor"
+        cls, _executor: "StreamingExecutor"
     ) -> Optional["ExecutionCallback"]:
         """Factory method to create a callback instance from the executor.
 
@@ -21,7 +21,7 @@ class ExecutionCallback:
         the executor or context before instantiation.
 
         Args:
-            executor: The executor instance to initialize from.
+            _executor: The executor instance to initialize from.
 
         Returns:
             An instance of the callback, or None if the callback should be skipped
