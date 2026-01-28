@@ -15,8 +15,6 @@ class LoadCheckpointCallback(ExecutionCallback):
     """ExecutionCallback that handles checkpoints."""
 
     def __init__(self):
-        # We cannot require config in __init__ anymore because this class is
-        # instantiated by the StreamingExecutor generic loop.
         self._config: Optional[CheckpointConfig] = None
         self._ckpt_filter: Optional[BatchBasedCheckpointFilter] = None
         self._checkpoint_ref: Optional[ObjectRef[Block]] = None
@@ -35,14 +33,15 @@ class LoadCheckpointCallback(ExecutionCallback):
     def _create_checkpoint_filter(
         self, config: CheckpointConfig
     ) -> BatchBasedCheckpointFilter:
-        """Factory method to create the checkpoint filter."""
+        """Factory method to create the checkpoint filter.
+
+        Subclasses can override this to use a different filter implementation.
+        """
         return BatchBasedCheckpointFilter(config)
 
     def before_execution_starts(self, executor: StreamingExecutor):
-        # --- NEW LOGIC: Get config from context ---
         config = executor._data_context.checkpoint_config
 
-        # Guard clause: If no checkpoint config exists, do nothing (No-Op)
         if config is None:
             return
 
@@ -53,11 +52,10 @@ class LoadCheckpointCallback(ExecutionCallback):
         self._checkpoint_ref = self._ckpt_filter.load_checkpoint()
 
     def after_execution_succeeds(self, executor: StreamingExecutor):
-        # Guard clause: If we didn't start (no config), we don't finish
         if self._config is None:
             return
 
-        # Delete checkpoint data if configured
+        # Delete checkpoint data
         try:
             if self._config.delete_checkpoint_on_success:
                 # Ensure filter was created
@@ -67,10 +65,8 @@ class LoadCheckpointCallback(ExecutionCallback):
             logger.warning("Failed to delete checkpoint data.", exc_info=True)
 
     def after_execution_fails(self, executor: StreamingExecutor, error: Exception):
-        # No clean up needed here for now
         pass
 
     def load_checkpoint(self) -> ObjectRef[Block]:
-        # This is called by the physical operators that need the data
-        assert self._checkpoint_ref is not None, "Checkpoint data not loaded"
+        assert self._checkpoint_ref is not None
         return self._checkpoint_ref

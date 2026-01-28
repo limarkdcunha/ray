@@ -180,7 +180,6 @@ class Planner:
             logical_plan
         ):
             self._supports_checkpointing = True
-            pass
         elif checkpoint_config is not None:
             assert not self._check_supports_checkpointing(logical_plan)
             warnings.warn(

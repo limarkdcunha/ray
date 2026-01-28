@@ -1,7 +1,5 @@
 from typing import TYPE_CHECKING, Optional
 
-from ray.data.context import DataContext
-
 if TYPE_CHECKING:
     from ray.data._internal.execution.streaming_executor import StreamingExecutor
 
@@ -47,17 +45,3 @@ class ExecutionCallback:
     def after_execution_fails(self, executor: "StreamingExecutor", error: Exception):
         """Called after the Dataset execution fails."""
         ...
-
-
-def add_execution_callback(callback: ExecutionCallback, context: DataContext):
-    """Add an ExecutionCallback to the DataContext."""
-    execution_callbacks = context.get_config(EXECUTION_CALLBACKS_CONFIG_KEY, [])
-    execution_callbacks.append(callback)
-    context.set_config(EXECUTION_CALLBACKS_CONFIG_KEY, execution_callbacks)
-
-
-def remove_execution_callback(callback: ExecutionCallback, context: DataContext):
-    """Remove an ExecutionCallback from the DataContext."""
-    execution_callbacks = context.get_config(EXECUTION_CALLBACKS_CONFIG_KEY, [])
-    execution_callbacks.remove(callback)
-    context.set_config(EXECUTION_CALLBACKS_CONFIG_KEY, execution_callbacks)
