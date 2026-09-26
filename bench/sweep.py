@@ -106,12 +106,6 @@ async def one_request(
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "stream": True,
-        # Ask the server to report real token counts in the final SSE frame.
-        # Counting streamed chunks (what this harness used to do) is NOT a
-        # token count: a chunk may carry several tokens, so a run labelled
-        # OSL=500 was reporting ~70. vLLM's own benchmark reads
-        # usage.completion_tokens for exactly this reason.
-        "stream_options": {"include_usage": True},
         # Greedy: sampling variance would show up as TTFT noise across sides.
         "temperature": 0.0,
     }
@@ -132,7 +126,6 @@ async def one_request(
     start = time.perf_counter()
     ttft: Optional[float] = None
     chunk_count = 0
-    server_tokens: Optional[int] = None
 
     try:
         async with session.post(f"{url}/v1/chat/completions", json=payload) as resp:
@@ -158,11 +151,10 @@ async def one_request(
                     # (e.g. a proxy coalescing frames) -- skip it rather than
                     # fail the whole request over one malformed SSE line.
                     continue
-                # The usage frame arrives last and carries no choices.
-                usage = chunk.get("usage")
-                if usage and usage.get("completion_tokens") is not None:
-                    server_tokens = usage["completion_tokens"]
                 if not chunk.get("choices"):
+                    # A usage-only frame, if the endpoint sends one. Ray's
+                    # streaming path does not; ignore it either way so the two
+                    # arms count the same thing.
                     continue
                 delta = chunk["choices"][0].get("delta", {})
                 if not delta.get("content"):
@@ -187,9 +179,22 @@ async def one_request(
         rep=rep,
         ttft_s=ttft,
         total_s=time.perf_counter() - start,
-        # Prefer the server's count; fall back to chunks only if the endpoint
-        # did not honour stream_options.include_usage.
-        output_tokens=server_tokens if server_tokens is not None else chunk_count,
+        # CHUNKS, on both arms, deliberately.
+        #
+        # Reading the server's usage.completion_tokens would be the better
+        # number, but it is only available on one side: Ray's SGLang streaming
+        # path (sglang_engine.py, the `if request.stream` branch) yields SSE
+        # deltas and returns without ever emitting a usage frame, and nothing
+        # in the serve tree reads stream_options.include_usage. A directly
+        # served SGLang does emit it. Preferring the server count would
+        # therefore give real tokens on the native arm and chunk counts on the
+        # Ray arms -- tpot and output_tok_per_s would divide different units
+        # per side, and the divergence would read as a performance difference.
+        #
+        # With --ignore-eos pinning generation to exactly --max-tokens, chunk
+        # count is a consistent proxy on both sides, which is what a
+        # cross-arm comparison needs.
+        output_tokens=chunk_count,
         output_chunks=chunk_count,
     )
 
@@ -317,22 +322,23 @@ def summarize(results: list[RequestResult], wall_s: Optional[float] = None) -> d
     # be distinguished from a short-reply run, and tpot denominators vary with
     # content. NOTE: these count streamed CHUNKS, not tokens -- one chunk may
     # carry several tokens, so treat them as a shape check, not a token count.
-    toks = sorted(r.output_tokens for r in succeeded)
     chunks = sorted(r.output_chunks for r in succeeded)
-    if toks:
+    if chunks:
         out.update(
             {
-                # Server-reported completion_tokens (usage frame), NOT a chunk
-                # count. If --ignore-eos was passed, out_tokens_mean should
-                # equal --max-tokens; anything far below it means the engine
-                # dropped the flag (SGLang's Ray adapter allowlists sampling
-                # params) and this arm is NOT comparable to one that honoured
-                # it.
-                "out_tokens_mean": statistics.fmean(toks),
-                "out_tokens_p50": pct(toks, 0.50),
-                "out_tokens_min": toks[0],
-                "out_tokens_max": toks[-1],
-                "out_chunks_mean": statistics.fmean(chunks) if chunks else 0,
+                # STREAMED CHUNKS, not tokens -- one chunk may carry several.
+                # Named honestly because the server's real token count is not
+                # available symmetrically across arms (see one_request).
+                #
+                # With --ignore-eos this should sit at a stable value for a
+                # given --max-tokens, and it is comparable BETWEEN arms. A run
+                # WITHOUT --ignore-eos realizes far less: the randomized prompt
+                # is semantically empty, so the model hits EOS early and a
+                # nominal OSL of 500 came out around 70.
+                "out_chunks_mean": statistics.fmean(chunks),
+                "out_chunks_p50": pct(chunks, 0.50),
+                "out_chunks_min": chunks[0],
+                "out_chunks_max": chunks[-1],
             }
         )
 
@@ -414,7 +420,7 @@ def parse_args() -> argparse.Namespace:
             "a nominal OSL of 500 realizes ~70 tokens, so the workload is not "
             "decode-heavy. WARNING: SGLang's Ray adapter allowlists sampling "
             "params and silently drops ignore_eos, while native sglang honours "
-            "it -- check out_tokens_mean per arm before comparing."
+            "it -- check out_chunks_mean per arm before comparing."
         ),
     )
     parser.add_argument("--out", required=True, help="Output .jsonl path.")
