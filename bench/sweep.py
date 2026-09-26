@@ -72,6 +72,7 @@ class RequestResult:
     ttft_s: Optional[float]
     total_s: Optional[float]
     output_tokens: int
+    output_chunks: int = 0
     error: Optional[str] = None
 
 
@@ -97,6 +98,7 @@ async def one_request(
     max_tokens: int,
     concurrency: int,
     rep: int,
+    ignore_eos: bool = False,
 ) -> RequestResult:
     """Issue one streaming completion and time the first content chunk."""
     payload = {
@@ -104,13 +106,33 @@ async def one_request(
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "stream": True,
+        # Ask the server to report real token counts in the final SSE frame.
+        # Counting streamed chunks (what this harness used to do) is NOT a
+        # token count: a chunk may carry several tokens, so a run labelled
+        # OSL=500 was reporting ~70. vLLM's own benchmark reads
+        # usage.completion_tokens for exactly this reason.
+        "stream_options": {"include_usage": True},
         # Greedy: sampling variance would show up as TTFT noise across sides.
         "temperature": 0.0,
     }
+    if ignore_eos:
+        # --max-tokens is a CEILING, not a target. The randomized prompt is
+        # semantically empty, so the model hits EOS early and a nominal
+        # OSL=500 realizes ~70 tokens -- the workload is not decode-heavy in
+        # any meaningful sense. ignore_eos forces the full length.
+        #
+        # CAUTION: SGLang's Ray adapter (sglang_engine.py _build_sampling_params)
+        # forwards only an ALLOWLIST -- temperature, top_p, max_tokens, stop --
+        # so ignore_eos is silently DROPPED on the Ray arms while native
+        # honours it. Enabling this without fixing that allowlist produces a
+        # cross-arm asymmetry (Ray ~70 tokens, native 500) that is worse than
+        # the uniform mislabel. run_block asserts realized length per arm.
+        payload["ignore_eos"] = True
 
     start = time.perf_counter()
     ttft: Optional[float] = None
-    output_tokens = 0
+    chunk_count = 0
+    server_tokens: Optional[int] = None
 
     try:
         async with session.post(f"{url}/v1/chat/completions", json=payload) as resp:
@@ -136,13 +158,19 @@ async def one_request(
                     # (e.g. a proxy coalescing frames) -- skip it rather than
                     # fail the whole request over one malformed SSE line.
                     continue
+                # The usage frame arrives last and carries no choices.
+                usage = chunk.get("usage")
+                if usage and usage.get("completion_tokens") is not None:
+                    server_tokens = usage["completion_tokens"]
+                if not chunk.get("choices"):
+                    continue
                 delta = chunk["choices"][0].get("delta", {})
                 if not delta.get("content"):
                     # Role-only preamble chunk carries no generated token.
                     continue
                 if ttft is None:
                     ttft = time.perf_counter() - start
-                output_tokens += 1
+                chunk_count += 1
     except Exception as exc:  # noqa: BLE001 - a failed request is a data point
         return RequestResult(
             concurrency=concurrency,
@@ -150,6 +178,7 @@ async def one_request(
             ttft_s=None,
             total_s=None,
             output_tokens=0,
+            output_chunks=0,
             error=f"{type(exc).__name__}: {exc}",
         )
 
@@ -158,7 +187,10 @@ async def one_request(
         rep=rep,
         ttft_s=ttft,
         total_s=time.perf_counter() - start,
-        output_tokens=output_tokens,
+        # Prefer the server's count; fall back to chunks only if the endpoint
+        # did not honour stream_options.include_usage.
+        output_tokens=server_tokens if server_tokens is not None else chunk_count,
+        output_chunks=chunk_count,
     )
 
 
@@ -171,6 +203,7 @@ async def run_block(
     num_requests: int,
     rep: int,
     rng: random.Random,
+    ignore_eos: bool = False,
 ) -> list[RequestResult]:
     """Run ``num_requests`` at a fixed concurrency, keeping the level saturated."""
     results: list[RequestResult] = []
@@ -195,7 +228,14 @@ async def run_block(
             async with sem:
                 results.append(
                     await one_request(
-                        session, url, model, prompt, max_tokens, concurrency, rep
+                        session,
+                        url,
+                        model,
+                        prompt,
+                        max_tokens,
+                        concurrency,
+                        rep,
+                        ignore_eos,
                     )
                 )
 
@@ -277,14 +317,22 @@ def summarize(results: list[RequestResult], wall_s: Optional[float] = None) -> d
     # be distinguished from a short-reply run, and tpot denominators vary with
     # content. NOTE: these count streamed CHUNKS, not tokens -- one chunk may
     # carry several tokens, so treat them as a shape check, not a token count.
-    chunks = sorted(r.output_tokens for r in succeeded)
-    if chunks:
+    toks = sorted(r.output_tokens for r in succeeded)
+    chunks = sorted(r.output_chunks for r in succeeded)
+    if toks:
         out.update(
             {
-                "out_chunks_mean": statistics.fmean(chunks),
-                "out_chunks_p50": pct(chunks, 0.50),
-                "out_chunks_min": chunks[0],
-                "out_chunks_max": chunks[-1],
+                # Server-reported completion_tokens (usage frame), NOT a chunk
+                # count. If --ignore-eos was passed, out_tokens_mean should
+                # equal --max-tokens; anything far below it means the engine
+                # dropped the flag (SGLang's Ray adapter allowlists sampling
+                # params) and this arm is NOT comparable to one that honoured
+                # it.
+                "out_tokens_mean": statistics.fmean(toks),
+                "out_tokens_p50": pct(toks, 0.50),
+                "out_tokens_min": toks[0],
+                "out_tokens_max": toks[-1],
+                "out_chunks_mean": statistics.fmean(chunks) if chunks else 0,
             }
         )
 
@@ -357,6 +405,18 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Prompt-randomization seed, so a run can be replayed.",
     )
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help=(
+            "Force generation to the full --max-tokens instead of stopping at "
+            "EOS. Without it the randomized prompt is semantically empty and "
+            "a nominal OSL of 500 realizes ~70 tokens, so the workload is not "
+            "decode-heavy. WARNING: SGLang's Ray adapter allowlists sampling "
+            "params and silently drops ignore_eos, while native sglang honours "
+            "it -- check out_tokens_mean per arm before comparing."
+        ),
+    )
     parser.add_argument("--out", required=True, help="Output .jsonl path.")
     args = parser.parse_args()
 
@@ -395,6 +455,7 @@ async def main_async() -> None:
                     max_tokens=args.max_tokens,
                     concurrency=concurrency,
                     num_requests=args.requests_per_level,
+                    ignore_eos=args.ignore_eos,
                     rep=rep,
                     rng=rng,
                 )

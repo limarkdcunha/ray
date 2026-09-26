@@ -280,6 +280,7 @@ class SGLangServer:
         top_p = getattr(request, "top_p", None)
         max_tokens = getattr(request, "max_tokens", None)
         stop = getattr(request, "stop", None)
+        ignore_eos = getattr(request, "ignore_eos", None)
 
         if was_explicitly_set("temperature") and temperature is not None:
             sampling_params["temperature"] = temperature
@@ -289,6 +290,13 @@ class SGLangServer:
             sampling_params["max_new_tokens"] = max_tokens
         if was_explicitly_set("stop") and stop is not None:
             sampling_params["stop"] = stop
+        # Benchmarks pin output length by disabling the EOS stop condition, so
+        # a nominal OSL is actually generated rather than cut short by an early
+        # EOS. Without forwarding it here the flag is silently dropped on this
+        # engine while a directly-served SGLang honours it, which makes the two
+        # generate different amounts of work for the same request.
+        if was_explicitly_set("ignore_eos") and ignore_eos is not None:
+            sampling_params["ignore_eos"] = ignore_eos
 
         return sampling_params
 
